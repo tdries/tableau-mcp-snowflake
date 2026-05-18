@@ -68,6 +68,7 @@ export class Config extends BaseConfig {
   productTelemetryEnabled: boolean;
   isHyperforce: boolean;
   breakGlassDisableGlobally: boolean;
+  mcpBearerToken: string;
 
   constructor() {
     super();
@@ -129,6 +130,7 @@ export class Config extends BaseConfig {
       PRODUCT_TELEMETRY_ENABLED: productTelemetryEnabled,
       IS_HYPERFORCE: isHyperforce,
       BREAK_GLASS_DISABLE_GLOBALLY: breakGlassDisableGlobally,
+      MCP_BEARER_TOKEN: mcpBearerToken,
     } = cleansedVars;
 
     let jwtUsername = '';
@@ -177,7 +179,10 @@ export class Config extends BaseConfig {
     this.enableMcpSiteSettings = enableMcpSiteSettings !== 'false';
     this.allowSitesToConfigureRequestOverrides = allowSitesToConfigureRequestOverrides === 'true';
     this.enablePassthroughAuth = enablePassthroughAuth === 'true';
-    const disableOauthOverride = disableOauth === 'true';
+    this.mcpBearerToken = mcpBearerToken?.trim() ?? '';
+    // When a static bearer token is configured (e.g. for Snowflake CREATE MCP SERVER),
+    // we authenticate inbound calls with that shared secret instead of OAuth.
+    const disableOauthOverride = disableOauth === 'true' || !!this.mcpBearerToken;
     const disableScopes = oauthDisableScopes === 'true';
     const enforceScopes = !disableScopes;
     const embeddedAuthzServer = oauthEmbeddedAuthzServer !== 'false';
@@ -263,7 +268,11 @@ export class Config extends BaseConfig {
     this.breakGlassDisableGlobally = breakGlassDisableGlobally === 'true';
 
     this.auth = isAuthType(auth) ? auth : this.oauth.enabled ? 'oauth' : 'pat';
-    this.transport = isTransport(transport) ? transport : this.oauth.enabled ? 'http' : 'stdio';
+    this.transport = isTransport(transport)
+      ? transport
+      : this.oauth.enabled || this.mcpBearerToken
+        ? 'http'
+        : 'stdio';
 
     if (this.transport === 'http' && !disableOauthOverride && !this.oauth.issuer) {
       throw new Error(

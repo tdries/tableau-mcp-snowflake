@@ -25,6 +25,7 @@ import { TableauAuthInfo } from './oauth/schemas.js';
 import { AuthenticatedRequest } from './oauth/types.js';
 import { passthroughAuthMiddleware, X_TABLEAU_AUTH_HEADER } from './passthroughAuthMiddleware.js';
 import { X_TABLEAU_MCP_CONFIG_HEADER } from './requestUtils.js';
+import { staticBearerMiddleware } from './staticBearerMiddleware.js';
 
 const SESSION_ID_HEADER = 'mcp-session-id';
 
@@ -66,6 +67,16 @@ export async function startExpressServer({
   const middleware: Array<RequestHandler> = [handlePingRequest];
   if (config.enablePassthroughAuth) {
     middleware.push(passthroughAuthMiddleware());
+  }
+
+  if (config.mcpBearerToken) {
+    middleware.push(staticBearerMiddleware(config.mcpBearerToken));
+    log({
+      message:
+        'Static bearer-token auth is enabled. Inbound MCP requests must include `Authorization: Bearer <MCP_BEARER_TOKEN>`.',
+      level: 'info',
+      logger: 'startup',
+    });
   }
 
   if (config.oauth.enabled) {

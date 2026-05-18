@@ -1,3 +1,14 @@
+# Tableau MCP — Snowflake fork
+
+> Fork of [tableau/tableau-mcp](https://github.com/tableau/tableau-mcp) that adds a
+> static bearer-token auth mode so the HTTP transport can be called from
+> **Snowflake Cortex Agents** via `CREATE MCP SERVER`.
+>
+> See **[SNOWFLAKE.md](./SNOWFLAKE.md)** for the end-to-end Railway + Snowflake setup.
+> The original docs follow below.
+
+---
+
 # Tableau MCP
 
 [![Tableau Supported](https://img.shields.io/badge/Support%20Level-Tableau%20Supported-53bd92.svg)](https://www.tableau.com/support-levels-it-and-developer-tools)
