@@ -4,10 +4,22 @@ import { log } from '../logging/logger';
 import { AuthenticatedRequest } from './oauth/types';
 import { getHeader } from './requestUtils';
 
-export function staticBearerMiddleware(expectedToken: string): RequestHandler {
+export function staticBearerMiddleware(
+  expectedToken: string,
+  issuer: string,
+): RequestHandler {
   if (!expectedToken) {
     throw new Error('staticBearerMiddleware requires a non-empty token');
   }
+
+  // MCP authorization spec: 401s must advertise the protected-resource document
+  // so clients can discover which authorization server to use.
+  const resourceMetadataUrl = issuer
+    ? `${issuer.replace(/\/+$/, '')}/.well-known/oauth-protected-resource`
+    : '';
+  const wwwAuthenticate = resourceMetadataUrl
+    ? `Bearer realm="tableau-mcp", resource_metadata="${resourceMetadataUrl}"`
+    : 'Bearer realm="tableau-mcp"';
 
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     const authHeader = getHeader(req, 'authorization');
@@ -18,6 +30,7 @@ export function staticBearerMiddleware(expectedToken: string): RequestHandler {
         level: 'info',
         logger: 'auth',
       });
+      res.setHeader('WWW-Authenticate', wwwAuthenticate);
       res.status(401).json({
         error: 'invalid_token',
         error_description: 'Missing Authorization header',
@@ -27,6 +40,7 @@ export function staticBearerMiddleware(expectedToken: string): RequestHandler {
 
     const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
     if (!match) {
+      res.setHeader('WWW-Authenticate', wwwAuthenticate);
       res.status(401).json({
         error: 'invalid_token',
         error_description: 'Authorization header must be in the form: Bearer <token>',
@@ -41,6 +55,7 @@ export function staticBearerMiddleware(expectedToken: string): RequestHandler {
         level: 'info',
         logger: 'auth',
       });
+      res.setHeader('WWW-Authenticate', wwwAuthenticate);
       res.status(401).json({
         error: 'invalid_token',
         error_description: 'Invalid bearer token',

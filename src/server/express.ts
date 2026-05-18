@@ -78,7 +78,7 @@ export async function startExpressServer({
   }
 
   if (config.mcpBearerToken) {
-    middleware.push(staticBearerMiddleware(config.mcpBearerToken));
+    middleware.push(staticBearerMiddleware(config.mcpBearerToken, config.oauthShimIssuer));
     log({
       message:
         'Static bearer-token auth is enabled. Inbound MCP requests must include `Authorization: Bearer <MCP_BEARER_TOKEN>`.',

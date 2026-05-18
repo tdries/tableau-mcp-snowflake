@@ -3,6 +3,22 @@ import { Application, Request, Response } from 'express';
 
 import { log } from '../logging/logger';
 
+// In-memory store of authorization codes we've issued. The shim doesn't
+// authenticate any real user — possession of MCP_BEARER_TOKEN is the real
+// trust boundary — so we just need to round-trip a code so the OAuth
+// authorization_code dance completes.
+const issuedCodes = new Map<string, { expiresAt: number }>();
+const CODE_TTL_MS = 10 * 60 * 1000;
+
+function gcCodes(): void {
+  const now = Date.now();
+  for (const [code, info] of issuedCodes) {
+    if (info.expiresAt < now) {
+      issuedCodes.delete(code);
+    }
+  }
+}
+
 /**
  * Minimal OAuth 2.0 authorization-server shim for Snowflake's `external_mcp`
  * API integration. Snowflake refuses to register an external MCP server unless
@@ -49,6 +65,43 @@ export function registerOAuthShim(app: Application, params: { issuer: string; be
     });
   });
 
+  // Stubs so probes for these advertised endpoints don't 404.
+  app.get('/.well-known/jwks.json', (_req: Request, res: Response) => {
+    res.json({ keys: [] });
+  });
+  app.get('/oauth/authorize', (req: Request, res: Response) => {
+    // Snowflake's external_mcp uses the authorization_code grant: it sends
+    // the user's browser here, we issue a code, redirect back to the
+    // Snowsight callback. There's no real user to authenticate -- possession
+    // of MCP_BEARER_TOKEN is the trust boundary -- so we just round-trip.
+    const redirectUri = pickField(req, 'redirect_uri');
+    const state = pickField(req, 'state');
+    if (!redirectUri) {
+      res.status(400).json({
+        error: 'invalid_request',
+        error_description: 'Missing redirect_uri',
+      });
+      return;
+    }
+    gcCodes();
+    const code = randomBytes(24).toString('hex');
+    issuedCodes.set(code, { expiresAt: Date.now() + CODE_TTL_MS });
+
+    const url = new URL(redirectUri);
+    url.searchParams.set('code', code);
+    if (state) url.searchParams.set('state', state);
+    log({
+      message: `OAuth shim: issuing code, redirecting to ${url.origin}${url.pathname}`,
+      level: 'info',
+      logger: 'auth',
+    });
+    res.redirect(302, url.toString());
+  });
+  app.post('/oauth/revoke', (_req: Request, res: Response) => {
+    // RFC 7009: always 200 — even for unknown tokens.
+    res.status(200).end();
+  });
+
   app.post('/oauth/register', (req: Request, res: Response) => {
     const clientId = randomBytes(16).toString('hex');
     const clientSecret = randomBytes(32).toString('hex');
@@ -69,20 +122,44 @@ export function registerOAuthShim(app: Application, params: { issuer: string; be
 
   app.post('/oauth/token', (req: Request, res: Response) => {
     const grantType = pickField(req, 'grant_type');
-    if (grantType !== 'client_credentials') {
+    if (grantType === 'authorization_code') {
+      const code = pickField(req, 'code');
+      if (!code) {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing code',
+        });
+        return;
+      }
+      gcCodes();
+      const codeInfo = issuedCodes.get(code);
+      if (!codeInfo) {
+        // Unknown / expired code. Be lenient — the shim's trust boundary is
+        // the bearer middleware, not code validation — but still log it.
+        log({
+          message: `OAuth shim: token request with unknown code, issuing bearer anyway`,
+          level: 'info',
+          logger: 'auth',
+        });
+      } else {
+        issuedCodes.delete(code); // single-use
+      }
+    } else if (grantType === 'refresh_token') {
+      // Snowflake will try this when the access token expires. Return a fresh one.
+    } else if (grantType !== 'client_credentials') {
       res.status(400).json({
         error: 'unsupported_grant_type',
-        error_description: `Only client_credentials is supported, got: ${grantType}`,
+        error_description: `Got: ${grantType}. Supported: authorization_code, client_credentials, refresh_token`,
       });
       return;
     }
-    // We don't actually validate the client_id/secret pair — anything that came
-    // through /oauth/register (or that Snowflake otherwise has) is fine. Real
-    // protection comes from MCP_BEARER_TOKEN possession at the bearer middleware.
+    // We don't validate client_id/secret — possession of MCP_BEARER_TOKEN
+    // remains the actual trust boundary at the bearer middleware.
     res.json({
       access_token: bearerToken,
       token_type: 'Bearer',
       expires_in: tokenLifetimeSeconds,
+      refresh_token: bearerToken,
       scope: 'mcp',
     });
   });
@@ -97,13 +174,19 @@ export function registerOAuthShim(app: Application, params: { issuer: string; be
 function buildMetadata(issuer: string): Record<string, unknown> {
   return {
     issuer,
+    authorization_endpoint: `${issuer}/oauth/authorize`,
     token_endpoint: `${issuer}/oauth/token`,
     registration_endpoint: `${issuer}/oauth/register`,
-    grant_types_supported: ['client_credentials'],
-    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
-    response_types_supported: ['token'],
-    scopes_supported: ['mcp'],
-    code_challenge_methods_supported: ['S256'],
+    revocation_endpoint: `${issuer}/oauth/revoke`,
+    jwks_uri: `${issuer}/.well-known/jwks.json`,
+    grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
+    response_types_supported: ['code'],
+    response_modes_supported: ['query'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
+    code_challenge_methods_supported: ['S256', 'plain'],
+    scopes_supported: ['mcp', 'openid'],
+    subject_types_supported: ['public'],
+    service_documentation: 'https://github.com/tdries/tableau-mcp-snowflake',
   };
 }
 
