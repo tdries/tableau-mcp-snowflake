@@ -23,6 +23,7 @@ import { getTableauAuthInfo } from './oauth/getTableauAuthInfo.js';
 import { EmbeddedOAuthProvider, TableauOAuthProvider } from './oauth/provider.js';
 import { TableauAuthInfo } from './oauth/schemas.js';
 import { AuthenticatedRequest } from './oauth/types.js';
+import { registerOAuthShim } from './oauthShim.js';
 import { passthroughAuthMiddleware, X_TABLEAU_AUTH_HEADER } from './passthroughAuthMiddleware.js';
 import { X_TABLEAU_MCP_CONFIG_HEADER } from './requestUtils.js';
 import { staticBearerMiddleware } from './staticBearerMiddleware.js';
@@ -63,6 +64,13 @@ export async function startExpressServer({
       exposedHeaders: [SESSION_ID_HEADER, 'x-session-id'],
     }),
   );
+
+  if (config.mcpBearerToken && config.oauthShimIssuer) {
+    registerOAuthShim(app, {
+      issuer: config.oauthShimIssuer,
+      bearerToken: config.mcpBearerToken,
+    });
+  }
 
   const middleware: Array<RequestHandler> = [handlePingRequest];
   if (config.enablePassthroughAuth) {

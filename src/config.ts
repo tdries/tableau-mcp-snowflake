@@ -69,6 +69,7 @@ export class Config extends BaseConfig {
   isHyperforce: boolean;
   breakGlassDisableGlobally: boolean;
   mcpBearerToken: string;
+  oauthShimIssuer: string;
 
   constructor() {
     super();
@@ -131,6 +132,7 @@ export class Config extends BaseConfig {
       IS_HYPERFORCE: isHyperforce,
       BREAK_GLASS_DISABLE_GLOBALLY: breakGlassDisableGlobally,
       MCP_BEARER_TOKEN: mcpBearerToken,
+      OAUTH_SHIM_ISSUER: oauthShimIssuer,
     } = cleansedVars;
 
     let jwtUsername = '';
@@ -180,6 +182,7 @@ export class Config extends BaseConfig {
     this.allowSitesToConfigureRequestOverrides = allowSitesToConfigureRequestOverrides === 'true';
     this.enablePassthroughAuth = enablePassthroughAuth === 'true';
     this.mcpBearerToken = mcpBearerToken?.trim() ?? '';
+    this.oauthShimIssuer = (oauthShimIssuer?.trim() ?? '').replace(/\/+$/, '');
     // When a static bearer token is configured (e.g. for Snowflake CREATE MCP SERVER),
     // we authenticate inbound calls with that shared secret instead of OAuth.
     const disableOauthOverride = disableOauth === 'true' || !!this.mcpBearerToken;
