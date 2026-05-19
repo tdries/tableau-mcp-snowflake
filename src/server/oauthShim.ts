@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { Application, Request, Response } from 'express';
 
 import { log } from '../logging/logger';
+import { issueToken, refreshAccessToken } from './tokenStore.js';
 
 // In-memory store of authorization codes we've issued. The shim doesn't
 // authenticate any real user — possession of MCP_BEARER_TOKEN is the real
@@ -22,25 +23,26 @@ function gcCodes(): void {
 /**
  * Minimal OAuth 2.0 authorization-server shim for Snowflake's `external_mcp`
  * API integration. Snowflake refuses to register an external MCP server unless
- * `API_USER_AUTHENTICATION` is set, and the only types that fit a
- * machine-to-machine Cortex Agent are OAUTH_DYNAMIC_CLIENT / OAUTH_CLIENT_CREDENTIALS.
+ * `API_USER_AUTHENTICATION` is set with one of its OAuth flavors.
  *
- * Real OAuth would require user-interactive auth flows we don't want. Instead
- * this shim:
- *   1. Advertises an authorization-server metadata document.
+ * What this shim does:
+ *   1. Advertises authorization-server metadata.
  *   2. Accepts any Dynamic Client Registration request and returns synthetic
  *      client credentials.
- *   3. Accepts client_credentials token grants and returns the shared bearer
- *      token (the same MCP_BEARER_TOKEN our staticBearerMiddleware validates).
+ *   3. Issues a UNIQUE bearer token on every successful /oauth/token exchange
+ *      (authorization_code or client_credentials). Each Snowflake user that
+ *      goes through "Connect" therefore receives their own token, validated
+ *      by staticBearerMiddleware against the in-memory tokenStore.
  *
- * The result: Snowflake completes DCR + client_credentials happily, then sends
- * every MCP call with `Authorization: Bearer <MCP_BEARER_TOKEN>`, which the
- * existing middleware accepts. No real user identity is established — this is
- * service-account-style auth, gated on possession of MCP_BEARER_TOKEN.
+ * The static MCP_BEARER_TOKEN env var still works (backwards-compatible
+ * admin/curl backdoor) but is no longer the only valid bearer.
+ *
+ * The shim does NOT authenticate any real user — there's no Tableau login
+ * step. It just guarantees per-Connect uniqueness so different Snowflake
+ * users carry distinct tokens.
  */
-export function registerOAuthShim(app: Application, params: { issuer: string; bearerToken: string }): void {
-  const { issuer, bearerToken } = params;
-  const tokenLifetimeSeconds = 60 * 60;
+export function registerOAuthShim(app: Application, params: { issuer: string }): void {
+  const { issuer } = params;
 
   app.get('/.well-known/oauth-authorization-server', (_req: Request, res: Response) => {
     res.json(buildMetadata(issuer));
@@ -122,30 +124,59 @@ export function registerOAuthShim(app: Application, params: { issuer: string; be
 
   app.post('/oauth/token', (req: Request, res: Response) => {
     const grantType = pickField(req, 'grant_type');
+    const clientId = pickField(req, 'client_id') ?? 'unknown';
+
+    if (grantType === 'refresh_token') {
+      const refreshTok = pickField(req, 'refresh_token');
+      if (!refreshTok) {
+        res.status(400).json({ error: 'invalid_request', error_description: 'Missing refresh_token' });
+        return;
+      }
+      const next = refreshAccessToken(refreshTok);
+      if (!next) {
+        log({
+          message: 'OAuth shim: refresh_token unknown or expired',
+          level: 'info',
+          logger: 'auth',
+        });
+        res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'refresh_token is unknown or expired',
+        });
+        return;
+      }
+      log({
+        message: `OAuth shim: refreshed access token for client ${next.clientId}`,
+        level: 'info',
+        logger: 'auth',
+      });
+      res.json({
+        access_token: next.accessToken,
+        token_type: 'Bearer',
+        expires_in: Math.max(0, Math.floor((next.expiresAt - Date.now()) / 1000)),
+        refresh_token: next.refreshToken,
+        scope: 'mcp',
+      });
+      return;
+    }
+
     if (grantType === 'authorization_code') {
       const code = pickField(req, 'code');
       if (!code) {
-        res.status(400).json({
-          error: 'invalid_request',
-          error_description: 'Missing code',
-        });
+        res.status(400).json({ error: 'invalid_request', error_description: 'Missing code' });
         return;
       }
       gcCodes();
       const codeInfo = issuedCodes.get(code);
       if (!codeInfo) {
-        // Unknown / expired code. Be lenient — the shim's trust boundary is
-        // the bearer middleware, not code validation — but still log it.
         log({
-          message: `OAuth shim: token request with unknown code, issuing bearer anyway`,
+          message: 'OAuth shim: token request with unknown code, issuing bearer anyway',
           level: 'info',
           logger: 'auth',
         });
       } else {
-        issuedCodes.delete(code); // single-use
+        issuedCodes.delete(code);
       }
-    } else if (grantType === 'refresh_token') {
-      // Snowflake will try this when the access token expires. Return a fresh one.
     } else if (grantType !== 'client_credentials') {
       res.status(400).json({
         error: 'unsupported_grant_type',
@@ -153,13 +184,19 @@ export function registerOAuthShim(app: Application, params: { issuer: string; be
       });
       return;
     }
-    // We don't validate client_id/secret — possession of MCP_BEARER_TOKEN
-    // remains the actual trust boundary at the bearer middleware.
+
+    // Fresh token per exchange — each Snowflake user's "Connect" gets their own.
+    const issued = issueToken({ clientId });
+    log({
+      message: `OAuth shim: issued new access token for client ${clientId}`,
+      level: 'info',
+      logger: 'auth',
+    });
     res.json({
-      access_token: bearerToken,
+      access_token: issued.accessToken,
       token_type: 'Bearer',
-      expires_in: tokenLifetimeSeconds,
-      refresh_token: bearerToken,
+      expires_in: Math.max(0, Math.floor((issued.expiresAt - Date.now()) / 1000)),
+      refresh_token: issued.refreshToken,
       scope: 'mcp',
     });
   });

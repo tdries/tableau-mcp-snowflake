@@ -65,11 +65,8 @@ export async function startExpressServer({
     }),
   );
 
-  if (config.mcpBearerToken && config.oauthShimIssuer) {
-    registerOAuthShim(app, {
-      issuer: config.oauthShimIssuer,
-      bearerToken: config.mcpBearerToken,
-    });
+  if (config.oauthShimIssuer) {
+    registerOAuthShim(app, { issuer: config.oauthShimIssuer });
   }
 
   const middleware: Array<RequestHandler> = [handlePingRequest];
@@ -77,11 +74,17 @@ export async function startExpressServer({
     middleware.push(passthroughAuthMiddleware());
   }
 
-  if (config.mcpBearerToken) {
-    middleware.push(staticBearerMiddleware(config.mcpBearerToken, config.oauthShimIssuer));
+  if (config.mcpBearerToken || config.oauthShimIssuer) {
+    middleware.push(
+      staticBearerMiddleware({
+        envToken: config.mcpBearerToken,
+        issuer: config.oauthShimIssuer,
+      }),
+    );
     log({
-      message:
-        'Static bearer-token auth is enabled. Inbound MCP requests must include `Authorization: Bearer <MCP_BEARER_TOKEN>`.',
+      message: config.oauthShimIssuer
+        ? 'Bearer-token auth enabled. Accepts tokens issued via the OAuth shim AND, if MCP_BEARER_TOKEN is set, that env-var value as a fallback.'
+        : 'Static bearer-token auth enabled. Inbound MCP requests must include `Authorization: Bearer <MCP_BEARER_TOKEN>`.',
       level: 'info',
       logger: 'startup',
     });

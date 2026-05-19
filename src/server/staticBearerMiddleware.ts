@@ -3,17 +3,23 @@ import { NextFunction, RequestHandler, Response } from 'express';
 import { log } from '../logging/logger';
 import { AuthenticatedRequest } from './oauth/types';
 import { getHeader } from './requestUtils';
+import { validateAccessToken } from './tokenStore';
 
-export function staticBearerMiddleware(
-  expectedToken: string,
-  issuer: string,
-): RequestHandler {
-  if (!expectedToken) {
-    throw new Error('staticBearerMiddleware requires a non-empty token');
+interface BearerMiddlewareOptions {
+  /** Optional static token that always validates — admin / curl backdoor. */
+  envToken?: string;
+  /** OAuth shim issuer URL; used to set a WWW-Authenticate hint on 401s. */
+  issuer?: string;
+}
+
+export function staticBearerMiddleware(opts: BearerMiddlewareOptions): RequestHandler {
+  const { envToken, issuer } = opts;
+  if (!envToken && !issuer) {
+    throw new Error(
+      'staticBearerMiddleware requires at least one of: MCP_BEARER_TOKEN env var or OAUTH_SHIM_ISSUER',
+    );
   }
 
-  // MCP authorization spec: 401s must advertise the protected-resource document
-  // so clients can discover which authorization server to use.
   const resourceMetadataUrl = issuer
     ? `${issuer.replace(/\/+$/, '')}/.well-known/oauth-protected-resource`
     : '';
@@ -25,52 +31,48 @@ export function staticBearerMiddleware(
     const authHeader = getHeader(req, 'authorization');
 
     if (!authHeader) {
-      log({
-        message: 'Static bearer auth rejected: missing Authorization header',
-        level: 'info',
-        logger: 'auth',
-      });
-      res.setHeader('WWW-Authenticate', wwwAuthenticate);
-      res.status(401).json({
-        error: 'invalid_token',
-        error_description: 'Missing Authorization header',
-      });
+      reject(res, 'Missing Authorization header', wwwAuthenticate);
       return;
     }
 
     const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
     if (!match) {
-      res.setHeader('WWW-Authenticate', wwwAuthenticate);
-      res.status(401).json({
-        error: 'invalid_token',
-        error_description: 'Authorization header must be in the form: Bearer <token>',
-      });
+      reject(res, 'Authorization header must be in the form: Bearer <token>', wwwAuthenticate);
       return;
     }
 
     const presented = match[1].trim();
-    if (!constantTimeEquals(presented, expectedToken)) {
-      log({
-        message: 'Static bearer auth rejected: invalid token',
-        level: 'info',
-        logger: 'auth',
-      });
-      res.setHeader('WWW-Authenticate', wwwAuthenticate);
-      res.status(401).json({
-        error: 'invalid_token',
-        error_description: 'Invalid bearer token',
-      });
+
+    // Path 1: env-var backdoor (kept for direct curl / admin testing).
+    if (envToken && constantTimeEquals(presented, envToken)) {
+      req.auth = { token: presented, clientId: 'static-env', scopes: [] };
+      next();
       return;
     }
 
-    req.auth = {
-      token: presented,
-      clientId: 'static-bearer',
-      scopes: [],
-    };
+    // Path 2: tokens issued via the OAuth shim's /oauth/token endpoint.
+    const issued = validateAccessToken(presented);
+    if (issued) {
+      req.auth = { token: presented, clientId: issued.clientId, scopes: [] };
+      next();
+      return;
+    }
 
-    next();
+    log({
+      message: 'Bearer auth rejected: token not recognized',
+      level: 'info',
+      logger: 'auth',
+    });
+    reject(res, 'Invalid bearer token', wwwAuthenticate);
   };
+}
+
+function reject(res: Response, description: string, wwwAuthenticate: string): void {
+  res.setHeader('WWW-Authenticate', wwwAuthenticate);
+  res.status(401).json({
+    error: 'invalid_token',
+    error_description: description,
+  });
 }
 
 function constantTimeEquals(a: string, b: string): boolean {
