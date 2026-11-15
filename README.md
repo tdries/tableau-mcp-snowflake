@@ -1,5 +1,8 @@
 # Tableau MCP — Snowflake fork
 
+<!-- coffee -->
+☕ **Think I deserve a coffee for all the hard work I put into this? [Buy me one, you silly!](https://ko-fi.com/thank_you_so_much_i_love_you) 🙂**
+
 > Fork of [tableau/tableau-mcp](https://github.com/tableau/tableau-mcp) that adds a
 > static bearer-token auth mode so the HTTP transport can be called from
 > **Snowflake Cortex Agents** via `CREATE MCP SERVER`.
@@ -104,3 +107,8 @@ Show me an image of the "Economy" view in the "Finances" project.
 #### Response
 
 ![Economy View Image](docs/static/img/economy-view.png)
+
+---
+
+<!-- coffee -->
+☕ **Think I deserve a coffee for all the hard work I put into this? [Buy me one, you silly!](https://ko-fi.com/thank_you_so_much_i_love_you) 🙂**
